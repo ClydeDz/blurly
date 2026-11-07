@@ -1,0 +1,75 @@
+name: CI & Deploy
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# Read-only by default; the deploy job opts into more below.
+permissions:
+  contents: read
+
+# Supersede stale pull-request checks, but let push runs finish so a Pages
+# deployment that has started is not cancelled by a newer push.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  verify:
+    name: Typecheck, test & build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      # Yarn 1's equivalent of `npm ci`: fails if yarn.lock is out of date.
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      # Vitest does not typecheck, so this has to run separately.
+      - name: Typecheck
+        run: yarn typecheck
+
+      - name: Test
+        run: yarn test
+
+      - name: Build
+        run: yarn build
+
+      # vite.config.ts sets `base: './'`, so the bundle references its assets
+      # relatively and works at https://<user>.github.io/<repo>/ without the
+      # repo name being baked in. Do not add actions/configure-pages or a
+      # hardcoded base path — it is not needed and would break local preview.
+      - name: Upload Pages artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: verify
+    # Only the default branch publishes. Pull requests stop after `verify`.
+    if: >-
+      github.event_name != 'pull_request' &&
+      github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write # publish to Pages
+      id-token: write # OIDC token the deploy action verifies with
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@v4
